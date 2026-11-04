@@ -44,8 +44,9 @@ from hermes_dust.models import REASONING_EFFORTS, decode_model_id
 from hermes_dust.sse import iter_sse_events
 from hermes_dust.tag_stripper import create_tag_stripper
 
-AGENT_MESSAGE_ATTEMPTS = 12
-AGENT_MESSAGE_DELAY_S = 1.0
+AGENT_MESSAGE_ATTEMPTS = 30
+AGENT_MESSAGE_DELAY_S = 2.0
+POST_CANCEL_ATTEMPTS = 5
 TERMINAL_TYPES = {
     "agent_message_success": "stop",
     "agent_message_gracefully_stopped": "stop",
@@ -371,7 +372,7 @@ class DustClient:
             except Exception:
                 await_cancel = False
             if await_cancel:
-                for _ in range(AGENT_MESSAGE_ATTEMPTS):
+                for _ in range(POST_CANCEL_ATTEMPTS):
                     self.sleep(AGENT_MESSAGE_DELAY_S)
                     agent_message_id, _ = poll()
                     if agent_message_id is not None:
