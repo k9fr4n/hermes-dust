@@ -156,14 +156,14 @@ def refresh_credential(entry: Any) -> dict[str, Any] | None:
 
 def _choose_workspace(access_token: str, region: str) -> str:
     """Resolve the workspace, asking when the user belongs to several."""
+    from hermes_dust.bridge.pod import parse_workspaces
     from hermes_dust.http import DustRequestContext, dust_json
 
     try:
         body = dust_json(DustRequestContext(base=f"{_host(region)}/api/v1", access_token=access_token), "me")
     except Exception as exc:
         raise RuntimeError(f"Dust: cannot list workspaces: {exc}") from exc
-    workspaces = (body or {}).get("workspaces", []) if isinstance(body, dict) else []
-    ids = [w.get("sId") for w in workspaces if isinstance(w, dict) and w.get("sId")]
+    ids = [w.s_id for w in parse_workspaces(body)]
     if not ids:
         raise RuntimeError("Dust: no workspace found for this user.")
     if len(ids) == 1:

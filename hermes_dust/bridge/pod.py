@@ -37,6 +37,17 @@ class DustWorkspace:
     role: str = ""
 
 
+def parse_workspaces(body: Any) -> list[DustWorkspace]:
+    """Workspaces from a ``GET /api/v1/me`` body: ``{user: {workspaces: […]}}``."""
+    user = body.get("user", {}) if isinstance(body, dict) else {}
+    workspaces = user.get("workspaces", []) if isinstance(user, dict) else []
+    return [
+        DustWorkspace(s_id=str(w.get("sId") or ""), name=str(w.get("name") or ""), role=str(w.get("role") or ""))
+        for w in workspaces
+        if isinstance(w, dict) and w.get("sId")
+    ]
+
+
 def pod_relative_path(listed: str) -> str:
     """Strip the ``pod-<id>/`` prefix the listing adds."""
     if "/" not in listed:
@@ -87,14 +98,7 @@ def ensure_pod(dust_json_fn: Any, name: str) -> tuple[DustPod, bool]:
 
 def fetch_workspaces(dust_json_fn: Any) -> list[DustWorkspace]:
     """Workspaces the logged-in user belongs to (non-workspace-scoped route)."""
-    body = dust_json_fn("me")
-    user = body.get("user", {}) if isinstance(body, dict) else {}
-    workspaces = user.get("workspaces", []) if isinstance(user, dict) else []
-    return [
-        DustWorkspace(s_id=str(w.get("sId") or ""), name=str(w.get("name") or ""), role=str(w.get("role") or ""))
-        for w in workspaces
-        if isinstance(w, dict)
-    ]
+    return parse_workspaces(dust_json_fn("me"))
 
 
 def list_pod_files(dust_json_fn: Any, space_id: str) -> list[PodFile]:

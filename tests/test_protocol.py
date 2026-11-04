@@ -3,8 +3,10 @@
 import base64
 import json
 import unittest
+from unittest.mock import patch
 
 from hermes_dust import bridge_note, workos
+from hermes_dust.bridge.pod import parse_workspaces
 from hermes_dust.tag_stripper import create_tag_stripper
 
 
@@ -55,6 +57,44 @@ class TestWorkos(unittest.TestCase):
         with self.assertRaises(workos.WorkosAuthError) as ctx:
             workos.refresh_grant("stale", post_form=post)
         self.assertTrue(ctx.exception.requires_reauthentication)
+
+
+def _me_body(*workspaces: dict) -> dict:
+    return {"user": {"workspaces": workspaces}}
+
+
+class TestWorkspaceParsing(unittest.TestCase):
+    def test_parse_me_body(self) -> None:
+        parsed = parse_workspaces(_me_body({"sId": "w1", "name": "A", "role": "admin"}, {"name": "no-id"}))
+        self.assertEqual([(w.s_id, w.name, w.role) for w in parsed], [("w1", "A", "admin")])
+
+    def test_parse_empty(self) -> None:
+        self.assertEqual(parse_workspaces({}), [])
+        self.assertEqual(parse_workspaces({"workspaces": [{"sId": "w1"}]}), [])
+
+    def test_choose_single_workspace(self) -> None:
+        from hermes_dust.provider import _choose_workspace
+
+        with patch("hermes_dust.http.dust_json", return_value=_me_body({"sId": "w1", "name": "A"})):
+            self.assertEqual(_choose_workspace("token", "us-central1"), "w1")
+
+    def test_choose_several_lists_them(self) -> None:
+        from hermes_dust.provider import _choose_workspace
+
+        body = _me_body({"sId": "w1", "name": "A"}, {"sId": "w2", "name": "B"})
+        with patch("hermes_dust.http.dust_json", return_value=body):
+            with self.assertRaises(RuntimeError) as ctx:
+                _choose_workspace("token", "us-central1")
+        self.assertIn("w1", str(ctx.exception))
+        self.assertIn("--workspace", str(ctx.exception))
+
+    def test_choose_none(self) -> None:
+        from hermes_dust.provider import _choose_workspace
+
+        with patch("hermes_dust.http.dust_json", return_value=_me_body()):
+            with self.assertRaises(RuntimeError) as ctx:
+                _choose_workspace("token", "us-central1")
+        self.assertIn("no workspace", str(ctx.exception))
 
 
 class TestTagStripper(unittest.TestCase):
