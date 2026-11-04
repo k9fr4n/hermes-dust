@@ -1,0 +1,7 @@
+name: dust
+kind: model-provider
+version: 0.1.0
+description: Dust workspace agents as a Hermes model provider, ported from opencode-dust. WorkOS user grant, billed as interactive user usage.
+author: k9fr4n
+license: MIT
+homepage: https://github.com/k9fr4n/hermes-dust
