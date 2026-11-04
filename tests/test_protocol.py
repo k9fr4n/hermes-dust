@@ -71,10 +71,9 @@ class TestTagStripper(unittest.TestCase):
 class TestBridgeNote(unittest.TestCase):
     def test_hermes_note(self) -> None:
         note = bridge_note.hermes_bridge_note()
-        self.assertIn("Hermes", note)
+        self.assertIn("hs-tools/hs.sh", note)
         self.assertIn("read_file", note)
-        self.assertNotIn("opencode-", note)
-        self.assertNotIn("/files/pod", note)
+        self.assertNotIn("opencode", note)
 
 
 if __name__ == "__main__":

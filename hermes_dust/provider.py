@@ -1,9 +1,11 @@
 """Hermes provider profile for Dust workspace agents.
 
-Phase 1: text-only inference transport over the Dust conversation API.
-Hermes keeps its own tool loop; Dust is never sent Hermes tools, and the
-bridge note (``hermes_dust.bridge_note``) goes in front of every turn. The
-agent's own server-side tool approvals are answered automatically.
+Hermes keeps its own tool loop; Dust is never sent Hermes tools. The
+bridge note (``hermes_bridge_note``) goes in front of every turn, and while
+the turn streams the client polls the exchange pod: each request the agent
+leaves there is emitted as an OpenAI-style tool call, Hermes executes it
+with its own approvals, and the results go back through the pod ``.out``
+files. The agent's own server-side tool approvals are answered automatically.
 
 Auth is provider-owned (``auth_type = "dust_workos"``): the WorkOS device
 grant from ``hermes_dust.workos`` lands in the credential pool, one row per

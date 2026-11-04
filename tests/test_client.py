@@ -22,7 +22,7 @@ class TestClientPrompt(unittest.TestCase):
         client = DustClient(config=DustClientConfig(access_token="t", region="us-central1", workspace_id="w"))
         client.threads = DustThreadStore()
         with self.assertRaises(ValueError):
-            client._send([{"role": "user", "content": [{"type": "text", "text": "hi"}]}], "agent-default")
+            client._send([{"role": "user", "content": [{"type": "text", "text": "hi"}]}], "agent-default", [])
 
 
 if __name__ == "__main__":

@@ -113,9 +113,10 @@ def fetch_models(request_json: Any) -> list[DustModel]:
 def hermes_model_capabilities(models: list[DustModel]) -> dict[str, dict[str, Any]]:
     """Per-model capability declarations in the Hermes model_overrides schema.
 
-    Dust agents run their own tool loop server-side and cannot call Hermes
-    tools directly (phase 1: text only, bridge roadmap in README), so
-    supports_tools is False. Images travel as content fragments.
+    The Dust agent runs its own tool loop server-side, but the pod bridge
+    hands its requests to Hermes as OpenAI-style tool calls, which Hermes
+    executes locally with its own approvals — so tools are offered.
+    Images travel as content fragments.
     """
     capabilities: dict[str, dict[str, Any]] = {}
     for model in models:
@@ -124,7 +125,7 @@ def hermes_model_capabilities(models: list[DustModel]) -> dict[str, dict[str, An
         capabilities[model.id] = {
             "supports_reasoning": bool(model.reasoning_efforts),
             "supports_vision": model.supports_vision,
-            "supports_tools": False,
+            "supports_tools": True,
             "context_window": model.context_window,
         }
     return capabilities

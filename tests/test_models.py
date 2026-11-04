@@ -71,11 +71,11 @@ class TestCatalog(unittest.TestCase):
 
         self.assertEqual(fetch_models(boom), [AGENT_DEFAULT_MODEL])
 
-    def test_capabilities_disable_tools(self) -> None:
+    def test_capabilities_offer_tools_through_bridge(self) -> None:
         models = parse_catalog(_catalog_body())
         caps = hermes_model_capabilities(models)
         self.assertIn("anthropic:claude-sonnet-5", caps)
-        self.assertFalse(caps["anthropic:claude-sonnet-5"]["supports_tools"])
+        self.assertTrue(caps["anthropic:claude-sonnet-5"]["supports_tools"])
         self.assertTrue(caps["anthropic:claude-sonnet-5"]["supports_vision"])
         self.assertNotIn(AGENT_DEFAULT_MODEL_ID, caps)
 

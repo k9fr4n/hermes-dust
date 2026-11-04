@@ -11,13 +11,24 @@ under [`opencode-reference/`](opencode-reference/) — then ported to the
 Hermes provider API documented in
 [Hermes Model Provider Plugins](https://hermes-agent.nousresearch.com/docs/developer-guide/model-provider-plugin).
 
-## Status: phase 1 (text transport)
+## Status: phase 2 (pod/sandbox tool bridge)
 
 | # | Scope | State |
 | --- | --- | --- |
-| 1 | Protocol port: endpoints, billing origin, HTTP transport, SSE framing, WorkOS device grant, conversation helpers, history digest, tag stripper | Done, 38 stdlib tests |
-| 2 | Hermes provider profile (`dust`), provider-owned WorkOS auth, live model catalog, OpenAI-facade client | Scaffold done, needs live Hermes validation |
-| 3 | Tool bridge (Hermes tools executed for Dust turns, approvals, pod/MCP exchange) | Roadmap — text-only for now, `supports_tools: False` |
+| 1 | Protocol port: endpoints, billing origin, HTTP transport, SSE framing, WorkOS device grant, conversation helpers, history digest, tag stripper | Done, tested |
+| 2 | Hermes provider profile (`dust`), provider-owned WorkOS auth, live model catalog, OpenAI-facade client | Done, needs live Hermes validation |
+| 3 | Tool bridge, same pod/sandbox mechanism as opencode-dust | Done, needs live validation |
+
+`hermes_dust/bridge/` ports the whole exchange: request parsing
+(`protocol.py`), pod filesystem (`pod.py`), per-conversation sessions
+(`session.py`). While a Dust turn streams, the client polls the pod
+(`hs-bash/<conversation>/`), emits each request as one OpenAI `tool_calls`
+round — a JSON batch as Hermes tool calls, a shell script as one `terminal`
+call, one call at a time, requests in order — then writes the `.out` the
+sandbox helper waits on once Hermes reports the results. A `.detached`
+request (helper gave up after 100 s) is delivered as an automatic message
+on the next turn; interrupts cancel Dust's generation and write a cancelled
+`.out` instead of stranding the agent.
 
 ## Layout
 
@@ -33,10 +44,14 @@ hermes_dust/
   conversations.py     # open/continue/read conversations
   history.py           # history digest → conversation routing
   tag_stripper.py      # remove <thinking>/<response> delimiters
-  bridge_note.py       # Hermes-adapted turn note (phase 2 hook)
-  client.py            # DustClient: OpenAI-facade over conversations
+  bridge_note.py       # Hermes turn note: helper usage, batching rules
+  bridge/
+    protocol.py        # exchange shapes: requests, .out/.detached, helper script
+    pod.py             # pod filesystem + pod management (cache-busted reads)
+    session.py         # per-conversation claim/emit/outcome/delivery state
+  client.py            # DustClient: OpenAI facade + SSE/pod interleaving
   provider.py          # ProviderProfile, auth handler, catalog, client
-tests/                 # stdlib unittest suite, no network
+tests/                 # stdlib unittest suite, no network (60 tests)
 opencode-reference/    # original opencode-dust sources (history)
 ```
 
@@ -82,13 +97,25 @@ history, only the new user message is sent. Anything else (compaction,
 revert, edit) opens a new conversation with the transcript replayed and the
 system prompt in front.
 
-## Tool bridge roadmap (phase 2)
+## Tool bridge (same mechanism as opencode-dust)
 
-opencode-dust bridges tools through a private pod the agent's Computer
-sandbox mounts (`/files/pod`) and a bash helper that waits for opencode to
-run each call. The Hermes equivalent needs a host-side exchange Hermes can
-drive: either the same pod mechanism with Hermes executing calls via its
-plugin context, or an MCP server Dust dials back (the approach
-[dust-code-proxy](https://github.com/k9fr4n/dust-code-proxy) already uses
-for Claude Code). `hermes_dust/bridge_note.py` is the seam: phase 1 tells
-the agent to answer in-conversation, phase 2 will point it at the exchange.
+The Dust agent runs in its Computer sandbox, where the pod is mounted at
+`/files/pod`, and reaches the developer's machine through the helper the
+plugin leaves in the pod (`hs-tools/hs.sh`, rewritten on every connect):
+
+```sh
+bash /files/pod/hs-tools/hs.sh step1 <<'EOF'
+{"calls":[{"tool":"read_file","arguments":{"path":"src/a.ts"}}]}
+EOF
+```
+
+One pod per workspace (`hermes-<folder>`, `hermes-project` when the host
+does not report a project directory); each conversation leaves its
+requests under its own `hs-bash/<conversation>/` directory. The client
+polls once a second while the turn streams, claims each request exactly
+once (in-memory claim set — the listing goes through Cloudflare's cache),
+and emits one Hermes tool call per round so batches keep their order and
+stop-on-error survives. Hermes executes with its own approvals; the client
+formats the `.out` and resumes the same Dust event stream from its cursor.
+Server-side tool approvals are auto-approved; `web_search`/`web_extract`
+stay with Dust's own tools and are never bridged.
