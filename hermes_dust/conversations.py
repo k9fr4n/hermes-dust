@@ -55,6 +55,11 @@ class DustTurn:
 class DustTurnHandle:
     conversation_id: str
     user_message_id: str
+    # The reply Dust already created, when the send response carried it.
+    # The send routes are read-your-writes (strongly consistent) and return
+    # the agent message as soon as it exists; the separate conversation GET
+    # is served from lagging read replicas and can hide it for minutes.
+    agent_message_id: str | None = None
 
 
 def message_payload(turn: DustTurn) -> dict[str, Any]:
@@ -104,6 +109,21 @@ def last_messages(conversation: dict[str, Any] | None) -> list[dict[str, Any]]:
 def find_agent_message_id(conversation: dict[str, Any], user_message_id: str) -> str | None:
     """Find the agent message replying to a user message."""
     for message in last_messages(conversation):
+        if message.get("type") == "agent_message" and message.get("parentMessageId") == user_message_id:
+            s_id = message.get("sId")
+            return s_id if isinstance(s_id, str) else None
+    return None
+
+
+def find_agent_message_id_in(agent_messages: list[dict[str, Any]], user_message_id: str) -> str | None:
+    """Find the agent message replying to a user message among a flat list.
+
+    The continue route (``POST …/messages``) answers with ``agentMessages``,
+    a flat list of the agent messages it created for that user message, rather
+    than a whole conversation. Matching on ``parentMessageId`` keeps this the
+    same reply lookup as :func:`find_agent_message_id`.
+    """
+    for message in agent_messages:
         if message.get("type") == "agent_message" and message.get("parentMessageId") == user_message_id:
             s_id = message.get("sId")
             return s_id if isinstance(s_id, str) else None
@@ -190,9 +210,14 @@ def create_conversation(
         ),
         None,
     )
+    resolved_user_id = _require_id(user_message_id, "assistant/conversations", "user message")
+    # The create response already holds the agent reply Dust just queued, read
+    # from the primary. Prefer it over the conversation GET, which is served
+    # from read replicas that can lag the write for minutes.
     return DustTurnHandle(
         conversation_id=_require_id(conversation.get("sId"), "assistant/conversations", "conversation"),
-        user_message_id=_require_id(user_message_id, "assistant/conversations", "user message"),
+        user_message_id=resolved_user_id,
+        agent_message_id=find_agent_message_id(conversation, resolved_user_id),
     )
 
 
@@ -211,7 +236,14 @@ def post_message(
             raise DustConversationGoneError(conversation_id, exc) from exc
         raise
     message = body.get("message", {}) if isinstance(body, dict) else {}
+    user_message_id = _require_id(message.get("sId"), "assistant/conversations/messages", "user message")
+    agent_messages = body.get("agentMessages") if isinstance(body, dict) else None
     return DustTurnHandle(
         conversation_id=conversation_id,
-        user_message_id=_require_id(message.get("sId"), "assistant/conversations/messages", "user message"),
+        user_message_id=user_message_id,
+        agent_message_id=(
+            find_agent_message_id_in(agent_messages, user_message_id)
+            if isinstance(agent_messages, list)
+            else None
+        ),
     )

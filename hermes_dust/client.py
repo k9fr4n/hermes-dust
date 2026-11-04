@@ -24,6 +24,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Iterator
 
 from hermes_dust.bridge.protocol import NOT_BRIDGED, pod_name_for, tool_signatures
@@ -161,6 +162,21 @@ def _shell_tool_name(tools: list[dict[str, Any]]) -> str | None:
         if candidate in names:
             return candidate
     return None
+
+
+def _ns(value: Any) -> Any:
+    """Recursively convert a JSON-shaped dict/list into attribute objects.
+
+    Hermes consumes the OpenAI facade as SDK-style objects (``chunk.choices``,
+    ``choice.delta.content``, …), not as plain dicts. The turn is assembled as
+    dicts and converted once at the stream/complete boundary so the internal
+    ``.get`` consumers keep working.
+    """
+    if isinstance(value, dict):
+        return SimpleNamespace(**{key: _ns(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return [_ns(item) for item in value]
+    return value
 
 
 class _Completions:
@@ -311,7 +327,13 @@ class DustClient:
             except DustConversationGoneError:
                 fresh = plan_turn(DustThreadStore(), prompt)
                 handle = create_conversation(json_fn, turn_body(f"{prefix}{note}\n\n---\n\n{fresh.content}"))
-        agent_message_id = self._await_agent_message(handle.conversation_id, handle.user_message_id)
+        # The send response carries the reply Dust already queued (read-your-
+        # writes); use it directly and only fall back to polling the lagging
+        # conversation GET when Dust returned the user message before it had
+        # created the reply (the continue route answers without one).
+        agent_message_id = handle.agent_message_id or self._await_agent_message(
+            handle.conversation_id, handle.user_message_id
+        )
         bridge = BridgeSession(handle.conversation_id, ops, str(ops.get("space_id", "")))
         state = _TurnState(
             conversation_id=handle.conversation_id,
@@ -610,7 +632,7 @@ class DustClient:
         prompt = _host_messages_to_prompt(messages)
         return self._send(prompt, model, tools), shell_tool
 
-    def complete_turn(self, *, messages: list[dict[str, Any]], model: str, extra: dict[str, Any]) -> dict[str, Any]:
+    def complete_turn(self, *, messages: list[dict[str, Any]], model: str, extra: dict[str, Any]) -> Any:
         turn, shell_tool = self._prepare(messages, model, extra)
         round_texts: list[str] = []
         finish_reason = "stop"
@@ -623,24 +645,26 @@ class DustClient:
                     finish_reason = choice["finish_reason"]
         if finish_reason == "stop":
             remember_turn(self.threads, turn.send_prompt, "".join(turn.answer_parts), turn.conversation_id)
-        return {
-            "choices": [
-                {
-                    "message": {"role": "assistant", "content": "".join(round_texts)},
-                    "finish_reason": finish_reason,
-                }
-            ]
-        }
+        return _ns(
+            {
+                "choices": [
+                    {
+                        "message": {"role": "assistant", "content": "".join(round_texts)},
+                        "finish_reason": finish_reason,
+                    }
+                ]
+            }
+        )
 
     def stream_turn(
         self, *, messages: list[dict[str, Any]], model: str, extra: dict[str, Any]
-    ) -> Iterator[dict[str, Any]]:
+    ) -> Iterator[Any]:
         turn, shell_tool = self._prepare(messages, model, extra)
         finish_reason = "stop"
         for chunk in self._collect_answer(turn, shell_tool):
             for choice in chunk.get("choices", []):
                 if (choice.get("delta") or {}).get("finish_reason") or choice.get("finish_reason"):
                     finish_reason = (choice.get("delta") or {}).get("finish_reason") or choice.get("finish_reason")
-            yield chunk
+            yield _ns(chunk)
         if finish_reason == "stop":
             remember_turn(self.threads, turn.send_prompt, "".join(turn.answer_parts), turn.conversation_id)

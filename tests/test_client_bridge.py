@@ -110,7 +110,7 @@ class TestClientBridge(unittest.TestCase):
             model="dust/anthropic:claude-x",
             extra={"tools": BRIDGE_TOOLS},
         )
-        self.assertEqual(result["choices"][0]["finish_reason"], "tool_calls")
+        self.assertEqual(result.choices[0].finish_reason, "tool_calls")
 
         turn = client._turns["conv1"]
         assert turn.session is not None
@@ -131,8 +131,8 @@ class TestClientBridge(unittest.TestCase):
             model="dust/anthropic:claude-x",
             extra={"tools": BRIDGE_TOOLS},
         )
-        self.assertEqual(resumed["choices"][0]["finish_reason"], "stop")
-        self.assertEqual(resumed["choices"][0]["message"]["content"], "done")
+        self.assertEqual(resumed.choices[0].finish_reason, "stop")
+        self.assertEqual(resumed.choices[0].message.content, "done")
 
         out = pod.files.get("hs-bash/conv1/step1.out")
         self.assertIsNotNone(out)
@@ -206,6 +206,26 @@ class TestClientBridge(unittest.TestCase):
 
         client._dust_json = scripted  # type: ignore[method-assign]
         self.assertEqual(client._await_agent_message("conv1", "u1"), "a1")
+
+    def test_stream_yields_attribute_objects(self) -> None:
+        pod = FakePod()
+        client = FakeBridgeClient(pod, first_turn_batches())
+        chunks = list(
+            client.stream_turn(
+                messages=[{"role": "user", "content": "hi"}],
+                model="dust/anthropic:claude-x",
+                extra={"tools": BRIDGE_TOOLS},
+            )
+        )
+        self.assertTrue(chunks)
+        # Hermes consumes the stream as SDK objects, not dicts.
+        text = [
+            c.choices[0].delta.content
+            for c in chunks
+            if c.choices and getattr(c.choices[0].delta, "content", None)
+        ]
+        self.assertEqual("".join(text), "working ")
+        self.assertEqual(chunks[-1].choices[0].finish_reason, "stop")
 
 
 if __name__ == "__main__":

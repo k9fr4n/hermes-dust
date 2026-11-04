@@ -5,7 +5,9 @@ import unittest
 from hermes_dust.conversations import (
     DustConversationGoneError,
     DustTurn,
+    create_conversation,
     find_agent_message_id,
+    find_agent_message_id_in,
     find_unfinished_agent_message_ids,
     message_payload,
     post_message,
@@ -81,6 +83,48 @@ class TestConversations(unittest.TestCase):
 
         with self.assertRaises(DustConversationGoneError):
             post_message(gone_json, "conv1", DustTurn(agent_s_id="dust", content="hi"))
+
+    def test_create_conversation_returns_agent_message_id(self) -> None:
+        def respond(path: str, method: str = "GET", body: object = None) -> object:
+            return {
+                "conversation": {
+                    "sId": "conv1",
+                    "content": [
+                        [{"type": "user_message", "sId": "u1"}],
+                        [{"type": "agent_message", "sId": "a1", "parentMessageId": "u1", "status": "created"}],
+                    ],
+                }
+            }
+
+        handle = create_conversation(respond, DustTurn(agent_s_id="dust", content="hi"))
+        self.assertEqual(handle.conversation_id, "conv1")
+        self.assertEqual(handle.user_message_id, "u1")
+        self.assertEqual(handle.agent_message_id, "a1")
+
+    def test_create_conversation_agent_message_id_none_when_absent(self) -> None:
+        def respond(path: str, method: str = "GET", body: object = None) -> object:
+            return {"conversation": {"sId": "conv1", "content": [[{"type": "user_message", "sId": "u1"}]]}}
+
+        handle = create_conversation(respond, DustTurn(agent_s_id="dust", content="hi"))
+        self.assertIsNone(handle.agent_message_id)
+
+    def test_post_message_returns_agent_message_id(self) -> None:
+        def respond(path: str, method: str = "GET", body: object = None) -> object:
+            return {
+                "message": {"sId": "u2"},
+                "agentMessages": [{"type": "agent_message", "sId": "a2", "parentMessageId": "u2"}],
+            }
+
+        handle = post_message(respond, "conv1", DustTurn(agent_s_id="dust", content="hi"))
+        self.assertEqual(handle.user_message_id, "u2")
+        self.assertEqual(handle.agent_message_id, "a2")
+
+    def test_find_agent_message_id_in_flat_list(self) -> None:
+        flat = [
+            {"type": "agent_message", "sId": "a2", "parentMessageId": "u2"},
+        ]
+        self.assertEqual(find_agent_message_id_in(flat, "u2"), "a2")
+        self.assertIsNone(find_agent_message_id_in(flat, "u1"))
 
 
 class TestHttpBytes(unittest.TestCase):
