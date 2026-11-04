@@ -218,22 +218,20 @@ def _refreshed_token(entry: Any, refresh: bool) -> str:
 
 def create_dust_client(**client_kwargs: Any) -> Any:
     """Supply the Dust facade client instead of the standard HTTP client."""
-    from hermes_dust.client import DustClient, DustClientConfig
+    from hermes_dust.client import DustClient, DustClientConfig, split_model_variant
 
     entry = _pick_entry()
     access_token, region, workspace_id = _entry_context(entry)
-    model = str(client_kwargs.get("model") or "")
-    reasoning_effort = None
-    if ":" in model:
-        # Hermes appends variants as model+variant; keep the bare model id.
-        model = model.split("+", 1)[0]
+    raw_model = str(client_kwargs.get("model") or "")
+    bare_model, variant_effort = split_model_variant(raw_model.split("/", 1)[-1] if "/" in raw_model else raw_model)
+    _ = bare_model  # the facade re-parses the full id per call; only the effort is needed here.
     return DustClient(
         config=DustClientConfig(
             access_token=lambda refresh: _refreshed_token(entry, refresh),
             region=region,
             workspace_id=workspace_id,
             agent_s_id="dust",
-            reasoning_effort=reasoning_effort,
+            reasoning_effort=variant_effort,
         )
     )
 
@@ -270,6 +268,9 @@ def build_dust_profile() -> Any:
     profile.refresh_credential = refresh_credential  # type: ignore[attr-defined]
     profile.fetch_models = fetch_dust_models  # type: ignore[method-assign]
     profile.create_client = create_dust_client  # type: ignore[method-assign]
+    # No HTTP endpoint to probe: inference goes through the DustClient over
+    # the conversation API, so the generic /models health check is skipped.
+    profile.supports_health_check = False  # type: ignore[attr-defined]
     return profile
 
 

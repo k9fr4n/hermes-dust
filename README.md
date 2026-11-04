@@ -51,7 +51,7 @@ hermes_dust/
     session.py         # per-conversation claim/emit/outcome/delivery state
   client.py            # DustClient: OpenAI facade + SSE/pod interleaving
   provider.py          # ProviderProfile, auth handler, catalog, client
-tests/                 # stdlib unittest suite, no network (60 tests)
+tests/                 # stdlib unittest suite, no network (61 tests)
 opencode-reference/    # original opencode-dust sources (history)
 ```
 
@@ -63,13 +63,169 @@ opencode-reference/    # original opencode-dust sources (history)
   Dust answers HTTP 403) and the **Computer** feature on.
 - Python 3.11+. No runtime dependencies.
 
+## Requirements
+
+- **Hermes Agent** with the documented external model-provider API
+  (`register_provider`, provider-owned auth, `create_client`).
+- A **Dust account** in a workspace with:
+  - the `models_picker` feature on — every picked model is sent as a
+    `modelSelection` override, and without it Dust answers HTTP 403;
+  - the **Computer** feature on (default) — the bridge's sandbox runs on it.
+- Python 3.11+. No runtime dependencies (stdlib only).
+
 ## Install
+
+### 1. Install the plugin
 
 ```sh
 hermes plugins install k9fr4n/hermes-dust --enable
-hermes auth add dust        # device code, approve in browser, pick workspace
-hermes model                # choose the dust provider and a dust/… model
 ```
+
+This clones the repo into Hermes' plugin directory
+(`~/.hermes/plugins/hermes-dust` by default) and enables it. A running
+Hermes process picks provider plugins up on its next provider lookup —
+no restart needed for the lookup itself, though the Desktop app may need
+one to refresh its pickers.
+
+Manual alternative, useful to hack on it:
+
+```sh
+git clone https://github.com/k9fr4n/hermes-dust.git ~/.hermes/plugins/hermes-dust
+hermes plugins enable dust
+```
+
+Validate the install without signing in (same check catalog CI runs):
+
+```sh
+hermes plugins validate ~/.hermes/plugins/hermes-dust
+python3 -m unittest discover -s ~/.hermes/plugins/hermes-dust/tests
+```
+
+The second command runs the plugin's own 61-test stdlib suite; it makes
+no network calls.
+
+> **Profiles.** Provider plugins resolve per Hermes profile. If you work
+> with several profiles, install and sign in in each one that should use
+> Dust: `hermes -p <profile> plugins install k9fr4n/hermes-dust --enable`.
+
+### 2. Sign in to Dust
+
+```sh
+hermes auth add dust
+```
+
+This starts the plugin-owned WorkOS device flow (the only auth path —
+there is deliberately no API key, which Dust would bill as programmatic
+usage):
+
+1. The command prints a URL and a user code.
+2. Open the URL, approve, and type the code.
+3. The plugin stores the grant (access + refresh token, region, workspace)
+   in that profile's credential pool and prints the workspace it scoped to.
+
+If you belong to several workspaces, the command lists them and stops —
+re-run naming one:
+
+```sh
+hermes auth add dust --workspace <workspace-sId> --force
+```
+
+`--force` replaces the stored grant without asking. One workspace is
+stored per Hermes profile; use a second profile (`hermes -p <other> …`)
+for a second workspace.
+
+Useful companions:
+
+```sh
+hermes auth status dust    # show the stored workspace and region
+hermes auth refresh dust   # rotate the grant now (otherwise automatic)
+hermes auth logout dust    # forget the grant
+```
+
+Tokens live 15 minutes and refresh themselves: every request mints from
+the pool, a 401 retries once against a freshly minted token, and long
+streams stay alive across rotations.
+
+### 3. Pick a model
+
+```sh
+hermes model               # choose the dust provider, then a dust/… model
+```
+
+Model ids mirror the workspace catalog as `dust/<providerId>:<modelId>`:
+
+```sh
+hermes chat --provider dust --model dust/anthropic:claude-sonnet-5
+```
+
+- The list is your workspace's live catalog; when the fetch fails, the
+  picker falls back to a curated list (`anthropic:claude-sonnet-5`,
+  `anthropic:claude-opus-5`, `openai:gpt-5.6-sol`,
+  `google_ai_studio:gemini-3.1-pro-preview`).
+- Models with vision accept pasted images (uploaded once, attached as
+  content fragments, deduplicated by bytes across replays).
+- Reasoning models accept an effort suffix, weakest first —
+  `dust/anthropic:claude-sonnet-5+high` sends `reasoningEffort: high`
+  with the override. Without a suffix Dust applies the model's own
+  default. Supported: `+none`, `+light`, `+medium`, `+high`.
+- There is no `agent-default` entry: it would run whatever model the Dust
+  agent is configured with, which Dust never reports, so it is not a model
+  a human can pick knowingly.
+
+### 4. First run
+
+On the first Dust turn in a profile, the plugin creates a private pod
+named `hermes-project` in the workspace and leaves the bridge helper in
+it (`hs-tools/hs.sh`). The pod holds only the exchange, never your code.
+
+During a turn the Dust agent works through its Computer sandbox (free
+`bash`, `basic` + `freeUsage`): it leaves a JSON batch of tool calls or a
+shell script in `hs-bash/<conversation>/`, Hermes executes it locally —
+with Hermes' own cards, diffs and approval prompts — and the result lands
+in the `.out` the sandbox call is waiting on. A request is therefore
+billed as interactive usage plus the model's own credits; the file
+round-trips themselves are free.
+
+## Everyday use
+
+- **Approvals** are Hermes' own: the agent cannot touch your machine
+  without going through the same policy and prompts as any Hermes model.
+  If an approval takes longer than the sandbox's 100 s wait, the agent
+  ends its turn; the finished result is delivered as an automatic message
+  on your next turn.
+- **Interrupting** a session cancels Dust's generation and writes a
+  cancelled result into the pod, so the sandbox never waits on a file
+  that will never come.
+- **History** follows the conversation: as long as Hermes' prompt extends
+  the history Dust holds, only the new message is sent. Compaction,
+  revert or edit opens a fresh conversation with the transcript replayed
+  and the system prompt in front.
+- **Images** go with the turn that carries them and are skipped with a
+  warning when Dust refuses one — the words are still answered.
+
+## Troubleshooting
+
+| Symptom | Cause / fix |
+| --- | --- |
+| `403` on every turn | The workspace lacks `models_picker`. Ask an admin, or pick no model until it is on — every offered model sends an override. |
+| `auth add` lists workspaces and stops | You belong to several; re-run with `--workspace <sId>`. |
+| `Not logged in to Dust` | `hermes auth add dust`; per profile — the CLI profile and the Desktop profile store separate grants. |
+| Agent says it cannot reach the project | The workspace's **Computer** feature is off, or the sandbox mount is missing. Re-enable Computer; the helper path is `bash /files/pod/hs-tools/hs.sh <name>`. |
+| A turn ends while work "is still running" | An approval outlasted the 100 s sandbox wait. Approve, then keep chatting: the result arrives as `[automatic message, …]` and the agent carries on. |
+| `Dust stopped answering` after a stall | The event stream broke past its reopen budget. Retry the turn; if it persists, check Dust status — the plugin never guesses an ending. |
+| `Unknown tool` for a bridged call | The agent invented a name outside the note's signatures. It reads the refusal and corrects itself next round; nothing ran. |
+| Desktop picker lacks `dust` | The profile has no live grant (`hermes auth status dust`), or the app needs a restart to refresh pickers. |
+
+## Uninstall
+
+```sh
+hermes plugins disable dust
+```
+
+then delete `~/.hermes/plugins/hermes-dust` (and `hermes auth logout dust`
+to forget the grant). The exchange pod stays in the workspace — Dust has
+no delete path the plugin can rely on — remove `hermes-project` by hand
+if you want it gone.
 
 Validate without Hermes core (protocol only):
 

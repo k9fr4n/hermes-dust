@@ -40,7 +40,7 @@ from hermes_dust.conversations import (
 )
 from hermes_dust.history import DustThreadStore, plan_turn, remember_turn
 from hermes_dust.http import DustRequestContext, dust_json
-from hermes_dust.models import decode_model_id
+from hermes_dust.models import REASONING_EFFORTS, decode_model_id
 from hermes_dust.sse import iter_sse_events
 from hermes_dust.tag_stripper import create_tag_stripper
 
@@ -122,6 +122,20 @@ def _tool_results(messages: list[dict[str, Any]]) -> list[tuple[str, str, bool]]
         results.append((str(tool_call_id), str(content or ""), bool(message.get("is_error", False))))
     results.reverse()
     return results
+
+
+def split_model_variant(model: str) -> tuple[str, str | None]:
+    """Split ``provider:model+effort`` into the Dust model id and effort.
+
+    The ``+effort`` suffix mirrors opencode's reasoning variants
+    (``none``/``light``/``medium``/``high``). An unknown suffix is kept as
+    part of the model id rather than silently dropped, so a typo fails at
+    Dust with the id visible instead of running the wrong configuration.
+    """
+    base, plus, suffix = model.partition("+")
+    if plus and suffix in REASONING_EFFORTS:
+        return base, suffix
+    return model, None
 
 
 def _openai_tools(extra: dict[str, Any]) -> list[dict[str, Any]]:
@@ -237,10 +251,13 @@ class DustClient:
     def _send(self, prompt: list[dict[str, Any]], model: str, tools: list[dict[str, Any]]) -> _TurnState:
         if not self.config.workspace_id:
             raise ValueError("No Dust workspace is configured; run `hermes auth add dust` and choose one.")
-        selection = decode_model_id(model.split("/", 1)[-1] if "/" in model else model)
+        raw_model = model.split("/", 1)[-1] if "/" in model else model
+        bare_model, variant_effort = split_model_variant(raw_model)
+        selection = decode_model_id(bare_model)
         if selection is None:
             raise ValueError(f"{model} is not a Dust model; pick one from the dust provider.")
         provider_id, model_id = selection
+        reasoning_effort = variant_effort or self.config.reasoning_effort
         plan = plan_turn(self.threads, prompt)
         ops = self._pod_ops()
         note = hermes_bridge_note(tool_signatures(tools) if tools else None)
@@ -256,7 +273,7 @@ class DustClient:
                 content=content,
                 model_provider=provider_id,
                 model_id=model_id,
-                reasoning_effort=self.config.reasoning_effort,
+                reasoning_effort=reasoning_effort,
                 space_id=ops.get("space_id"),
             )
 

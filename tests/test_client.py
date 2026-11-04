@@ -24,6 +24,14 @@ class TestClientPrompt(unittest.TestCase):
         with self.assertRaises(ValueError):
             client._send([{"role": "user", "content": [{"type": "text", "text": "hi"}]}], "agent-default", [])
 
+    def test_split_model_variant(self) -> None:
+        from hermes_dust.client import split_model_variant
+
+        self.assertEqual(split_model_variant("anthropic:claude-x+high"), ("anthropic:claude-x", "high"))
+        self.assertEqual(split_model_variant("anthropic:claude-x"), ("anthropic:claude-x", None))
+        # Unknown suffixes stay in the id so Dust reports the typo visibly.
+        self.assertEqual(split_model_variant("anthropic:claude-x+bogus"), ("anthropic:claude-x+bogus", None))
+
 
 if __name__ == "__main__":
     unittest.main()
