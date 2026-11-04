@@ -44,8 +44,12 @@ from hermes_dust.models import REASONING_EFFORTS, decode_model_id
 from hermes_dust.sse import iter_sse_events
 from hermes_dust.tag_stripper import create_tag_stripper
 
-AGENT_MESSAGE_ATTEMPTS = 30
 AGENT_MESSAGE_DELAY_S = 2.0
+# Poll schedule while waiting for Dust to expose the agent reply. Dust's
+# conversation reads are served live (no CDN cache) but EU read replicas
+# have been observed lagging the write by over a minute: short windows fail
+# turns whose reply already exists. ~38 polls over ~4 minutes.
+AGENT_MESSAGE_DELAYS = tuple([2.0] * 10 + [5.0] * 10 + [10.0] * 18)
 POST_CANCEL_ATTEMPTS = 5
 TERMINAL_TYPES = {
     "agent_message_success": "stop",
@@ -355,9 +359,9 @@ class DustClient:
 
         agent_message_id: str | None = None
         running: list[str] = []
-        for attempt in range(AGENT_MESSAGE_ATTEMPTS):
-            if attempt:
-                self.sleep(AGENT_MESSAGE_DELAY_S)
+        for index, delay in enumerate(AGENT_MESSAGE_DELAYS):
+            if index:
+                self.sleep(delay)
             agent_message_id, running = poll()
             if agent_message_id is not None:
                 return agent_message_id
