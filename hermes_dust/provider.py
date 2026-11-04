@@ -46,23 +46,17 @@ def _pool(provider: str = PROVIDER_NAME) -> Any:
 
 
 def _pick_entry() -> Any:
-    """Return the live pooled credential, refreshing it when due."""
-    from hermes_dust.workos import is_grant_expired
-    import time
+    """Return the live pooled credential, rotated by the pool when expiring.
 
-    pool = _pool()
-    entries = [e for e in pool.entries() if not getattr(e, "expired", False)]
-    if not entries:
+    Rotation goes through the pool's own single-use-safe machinery, which
+    calls this plugin's ``refresh_credential`` hook and persists the result
+    with cross-process locking. Never POST a WorkOS refresh from here: with
+    single-use refresh tokens a duplicate rotation burns the grant and the
+    next login is lost.
+    """
+    entry = _pool().select()
+    if entry is None:
         raise RuntimeError("Not logged in to Dust. Run `hermes auth add dust` first.")
-    entry = entries[0]
-    extra = getattr(entry, "extra", {}) or {}
-    expires_at = int(extra.get("expires_at_ms") or 0)
-    if expires_at and is_grant_expired(expires_at, int(time.time() * 1000)):
-        refreshed = refresh_credential(entry)
-        if refreshed:
-            pool.update_entry(getattr(entry, "id", ""), **refreshed)
-            entries = [e for e in pool.entries() if not getattr(e, "expired", False)]
-            entry = entries[0] if entries else entry
     return entry
 
 
@@ -122,23 +116,23 @@ def dust_auth_handler(action: str, args: Any) -> bool:
             extra = getattr(entry, "extra", {}) or {}
             print(f"  - {getattr(entry, 'label', '')} region={extra.get('region', '?')}")
         return True
-    if action == "logout":
-        for entry in list(_pool().entries()):
-            _pool().remove_entry(getattr(entry, "id", ""))
-        print("dust: logged out.")
-        return True
-    if action == "refresh":
-        for entry in list(_pool().entries()):
-            refreshed = refresh_credential(entry)
-            if refreshed:
-                _pool().update_entry(getattr(entry, "id", ""), **refreshed)
-        print("dust: grant refreshed.")
-        return True
+    if action in ("logout", "refresh"):
+        # Declined: the core's generic paths own pool mutation
+        # (``auth logout`` removal, ``pool.try_refresh_matching`` rotation with
+        # cross-process single-use locking). This plugin has no pool-write API
+        # of its own to do it safely.
+        return False
     return False
 
 
 def refresh_credential(entry: Any) -> dict[str, Any] | None:
-    """Rotate a pooled OAuth row; the pool persists the returned fields."""
+    """Rotate a pooled OAuth row; the pool persists the returned fields.
+
+    Returns flat fields: the pool writes dataclass fields
+    (``access_token``, ``refresh_token``, ``expires_at_ms``) onto the row
+    and merges everything else into ``extra``. Never nest an ``"extra"``
+    key — it would persist nested and shadow the real one.
+    """
     from hermes_dust.workos import WorkosAuthError, refresh_grant
 
     refresh_token = getattr(entry, "refresh_token", "")
@@ -149,9 +143,13 @@ def refresh_credential(entry: Any) -> dict[str, Any] | None:
     except WorkosAuthError as exc:
         logger.warning("dust: grant refresh failed: %s", exc)
         return None
-    extra = dict(getattr(entry, "extra", {}) or {})
-    extra.update({"region": grant.region, "expires_at_ms": grant.expires_at})
-    return {"access_token": grant.access_token, "refresh_token": grant.refresh_token, "extra": extra}
+    return {
+        "access_token": grant.access_token,
+        "refresh_token": grant.refresh_token,
+        "expires_at_ms": grant.expires_at,
+        "region": grant.region,
+        "workspace_id": (getattr(entry, "extra", None) or {}).get("workspace_id") or "",
+    }
 
 
 def _choose_workspace(access_token: str, region: str) -> str:
@@ -222,11 +220,15 @@ def dust_picker_catalog(force_refresh: bool = False) -> list[str] | None:
 def _refreshed_token(entry: Any, refresh: bool) -> str:
     if not refresh:
         return getattr(entry, "access_token", "")
-    refreshed = refresh_credential(entry)
-    if refreshed:
-        _pool().update_entry(getattr(entry, "id", ""), **refreshed)
-        return refreshed.get("access_token", "")
-    return getattr(entry, "access_token", "")
+    # A 401 means the token died early. Re-select so the pool hands back its
+    # live row (rotated by this or another process, with cross-process
+    # locking); the pool refreshes only when the row is actually expiring, so
+    # a duplicate rotation cannot burn single-use refresh tokens.
+    try:
+        fresh = _pick_entry()
+    except RuntimeError:
+        fresh = None
+    return getattr(fresh or entry, "access_token", "")
 
 
 def create_dust_client(**client_kwargs: Any) -> Any:

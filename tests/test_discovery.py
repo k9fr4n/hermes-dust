@@ -28,9 +28,14 @@ class TestBareDiscoveryLoad(unittest.TestCase):
         fake_base = types.ModuleType("providers.base")
         fake_base.ProviderProfile = StubProfile  # type: ignore[attr-defined]
 
-        saved = {name: sys.modules.get(name) for name in ("providers", "providers.base", "hermes_dust")}
-        saved_hermes = dict(sys.modules)
         saved_path = list(sys.path)
+        saved_modules = dict(sys.modules)
+        # Hermetic re-import: unittest loads every test module before running
+        # any test, so hermes_dust.provider may already sit in sys.modules
+        # with dust_profile=None (no core at that import). Drop it so the
+        # exec'd __init__ builds the profile against the fake providers below.
+        for name in ("hermes_dust.provider",):
+            sys.modules.pop(name, None)
         # Simulate the loader: plugin dir NOT on sys.path.
         sys.path = [p for p in sys.path if Path(p or ".").resolve() != ROOT]
         sys.modules["providers"] = fake_providers
@@ -43,15 +48,10 @@ class TestBareDiscoveryLoad(unittest.TestCase):
             sys.modules["dust_bare_probe"] = module
             spec.loader.exec_module(module)
         finally:
-            sys.modules.pop("dust_bare_probe", None)
-            for name, mod in saved.items():
-                if mod is None:
-                    sys.modules.pop(name, None)
-                else:
-                    sys.modules[name] = mod
-            for name in [n for n in sys.modules if n == "hermes_dust" or n.startswith("hermes_dust.")]:
-                if name not in saved_hermes:
+            for name in list(sys.modules):
+                if name not in saved_modules:
                     del sys.modules[name]
+            sys.modules.update(saved_modules)
             sys.path = saved_path
 
         self.assertTrue(module.ACTIVE)
