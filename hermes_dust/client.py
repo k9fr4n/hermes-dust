@@ -186,6 +186,7 @@ class DustClient:
         self._turns: dict[str, _TurnState] = {}
         self._cancel_event = threading.Event()
         self._pod_cache: dict[str, dict[str, Any]] = {}
+        self._reads = 0
 
     HERMES_SKIP_TRANSPORT_WRAP = True
     HERMES_SKIP_ASYNC_WRAP = True
@@ -224,6 +225,8 @@ class DustClient:
 
     def _pod_ops(self) -> dict[str, Any]:
         """Exchange pod file operations, ensured once per workspace."""
+        import logging
+
         from hermes_dust.bridge.pod import ensure_pod, make_pod_ops
         from hermes_dust.bridge.protocol import HELPER_PATH, helper_script
 
@@ -241,10 +244,23 @@ class DustClient:
         pod, _created = ensure_pod(json_fn, pod_name_for(self.config.project_dir))
         ops = make_pod_ops(context_fn, pod.s_id)
         try:
-            ops["write"](HELPER_PATH, helper_script())
-        except Exception:
-            pass
-        self._pod_cache[key] = {**ops, "space_id": pod.s_id}
+            present: bool | None = None
+            try:
+                present = ops["read"](HELPER_PATH) == helper_script()
+            except Exception:
+                present = False
+            if not present:
+                ops["write"](HELPER_PATH, helper_script())
+                present = ops["read"](HELPER_PATH) == helper_script()
+            if not present:
+                raise RuntimeError(f"helper {HELPER_PATH} not readable after upload")
+        except Exception as exc:
+            # Loud, not fatal: the turn still runs, but the agent cannot
+            # reach this machine — every request would wait out the sandbox
+            # timeout. The next turn retries the upload.
+            logging.getLogger(__name__).warning("dust: exchange pod %s unusable: %s", pod.s_id, exc)
+            return {**ops, "space_id": pod.s_id, "bridge_usable": False}
+        self._pod_cache[key] = {**ops, "space_id": pod.s_id, "bridge_usable": True}
         return self._pod_cache[key]
 
     # -- turns -----------------------------------------------------------------
@@ -301,21 +317,39 @@ class DustClient:
         self._turns[handle.conversation_id] = state
         return state
 
+    def _conversation_read_path(self, conversation_id: str) -> str:
+        """Conversation read that no cache may serve stale.
+
+        Dust serves API GETs through Cloudflare: a first read taken before
+        the agent row is visible can be answered from cache for every later
+        poll, which then never sees the reply. A unique query parameter
+        makes each poll a MISS.
+        """
+        self._reads += 1
+        return f"assistant/conversations/{conversation_id}?_={self._reads:x}"
+
     def _await_agent_message(self, conversation_id: str, user_message_id: str) -> str:
         from hermes_dust.conversations import DustConversationGoneError
 
+        gone_reads = 0
+        empty_reads = 0
+
         def poll() -> tuple[str | None, list[str]]:
+            nonlocal gone_reads, empty_reads
             try:
-                conversation = self._dust_json(f"assistant/conversations/{conversation_id}")
+                conversation = self._dust_json(self._conversation_read_path(conversation_id))
             except DustConversationGoneError:
                 # A just-created conversation may not be readable yet;
                 # bounded by the attempts below, this is a retry, not a loss.
+                gone_reads += 1
                 return None, []
             if not isinstance(conversation, dict):
+                empty_reads += 1
                 return None, []
             found = find_agent_message_id(conversation, user_message_id)
             if found is not None:
                 return found, []
+            empty_reads += 1
             return None, find_unfinished_agent_message_ids(conversation)
 
         agent_message_id: str | None = None
@@ -344,7 +378,8 @@ class DustClient:
                         return agent_message_id
         raise ValueError(
             "Dust accepted the message but created no agent reply to follow "
-            f"(conversation {conversation_id})."
+            f"(conversation {conversation_id}; {gone_reads} unreadable reads, "
+            f"{empty_reads} reads without a reply)."
         )
 
     def _find_follow_up(self, results: list[tuple[str, str, bool]]) -> _TurnState | None:
@@ -548,7 +583,7 @@ class DustClient:
 
             if not self._cancel_event.is_set():
                 stored = read_agent_message(
-                    self._dust_json(f"assistant/conversations/{turn.conversation_id}"),
+                    self._dust_json(self._conversation_read_path(turn.conversation_id)),
                     turn.agent_message_id,
                 )
                 if stored is not None and stored.state == "succeeded" and not turn.answer_parts and stored.content:

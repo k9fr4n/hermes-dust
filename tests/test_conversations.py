@@ -83,5 +83,57 @@ class TestConversations(unittest.TestCase):
             post_message(gone_json, "conv1", DustTurn(agent_s_id="dust", content="hi"))
 
 
+class TestHttpBytes(unittest.TestCase):
+    def test_dust_bytes_reads_once(self) -> None:
+        from hermes_dust.http import DustRequestContext, dust_bytes
+
+        class Raw:
+            status = 200
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def read(self, *args: object) -> bytes:
+                self.calls += 1
+                return b"plain-bytes" if self.calls == 1 else b""
+
+        raw = Raw()
+        context = DustRequestContext(
+            base="https://x",
+            access_token="t",
+            fetch=lambda url, method="GET", headers=None, body=None, timeout_s=None: raw,
+        )
+        status, data = dust_bytes(context, "some/file.txt")
+        self.assertEqual((status, data), (200, b"plain-bytes"))
+
+    def test_dust_bytes_retries_401(self) -> None:
+        from hermes_dust.http import DustRequestContext, dust_bytes
+
+        seen: list[str] = []
+
+        class Raw:
+            def __init__(self, status: int, payload: bytes) -> None:
+                self.status = status
+                self._payload = payload
+
+            def read(self, *args: object) -> bytes:
+                return self._payload
+
+        def fetch(url: str, method: str = "GET", headers=None, body=None, timeout_s=None):
+            token = (headers or {}).get("Authorization", "")
+            seen.append(token)
+            if "first" in token:
+                return Raw(401, b"no")
+            return Raw(200, b"yes")
+
+        context = DustRequestContext(
+            base="https://x",
+            access_token=lambda refresh: "first" if not refresh else "second",
+            fetch=fetch,
+        )
+        self.assertEqual(dust_bytes(context, "f"), (200, b"yes"))
+        self.assertEqual(seen, ["Bearer first", "Bearer second"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -51,7 +51,7 @@ hermes_dust/
     session.py         # per-conversation claim/emit/outcome/delivery state
   client.py            # DustClient: OpenAI facade + SSE/pod interleaving
   provider.py          # ProviderProfile, auth handler, catalog, client
-tests/                 # stdlib unittest suite, no network (76 tests)
+tests/                 # stdlib unittest suite, no network (80 tests)
 opencode-reference/    # original opencode-dust sources (history)
 ```
 
@@ -103,7 +103,7 @@ hermes plugins validate ~/.hermes/plugins/hermes-dust
 python3 -m unittest discover -s ~/.hermes/plugins/hermes-dust/tests
 ```
 
-The second command runs the plugin's own 76-test stdlib suite; it makes
+The second command runs the plugin's own 80-test stdlib suite; it makes
 no network calls.
 
 > **Profiles.** Provider plugins resolve per Hermes profile. If you work

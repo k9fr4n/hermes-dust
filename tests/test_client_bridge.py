@@ -58,6 +58,7 @@ class FakeBridgeClient(DustClient):
         self._batches = list(batches)
 
     def _dust_json(self, path: str, method: str = "GET", body=None):  # type: ignore[override]
+        path = path.split("?", 1)[0]  # the client cache-busts reads; fakes route on the base path
         if path == "assistant/conversations" and method == "POST":
             return conversation_created()
         if path == "assistant/conversations/conv1":

@@ -153,19 +153,14 @@ def make_pod_ops(context_fn: Any, space_id: str) -> dict[str, Any]:
     """Bind pod file operations for one pod; ``context_fn`` builds request contexts."""
 
     def fetch_fn(path: str, method: str = "GET", body: Any = None, raw_body: bool = False) -> dict[str, Any]:
-        from hermes_dust.http import DustResponse
+        from hermes_dust.http import dust_bytes, dust_fetch
 
-        response: DustResponse = dust_fetch(context_fn(), path, method=method, body=body, raw_body=raw_body)
-        raw_body_bytes: bytes | None = None
-        raw = getattr(response, "raw", None)
-        read = getattr(raw, "read", None)
-        if callable(read):
-            try:
-                data = read()
-                raw_body_bytes = data if isinstance(data, bytes) else str(data).encode("utf-8")
-            except Exception:
-                raw_body_bytes = None
-        return {"status": response.status, "body": raw_body_bytes if raw_body_bytes is not None else response.body}
+        if method == "GET" and body is None:
+            # Raw bytes, read exactly once: dust_fetch would consume the
+            # stream attempting a JSON parse and hand back an empty body.
+            status, data = dust_bytes(context_fn(), path)
+            return {"status": status, "body": data}
+        return {"status": dust_fetch(context_fn(), path, method=method, body=body, raw_body=raw_body).status}
 
     def json_fn(path: str, method: str = "GET", body: Any = None) -> Any:
         return dust_json(context_fn(), path, method=method, body=body)

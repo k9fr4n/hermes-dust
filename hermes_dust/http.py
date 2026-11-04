@@ -127,6 +127,31 @@ class DustResponse:
         return 200 <= self.status < 300
 
 
+def _request_parts(
+    context: DustRequestContext,
+    path: str,
+    method: str,
+    body: Any,
+    raw_body: bool,
+    headers: dict[str, str] | None,
+    token: str,
+) -> tuple[str, dict[str, str], bytes | None]:
+    """URL, headers and payload for one Dust call."""
+    request_headers = {**dust_auth_headers(token), **(headers or {})}
+    payload: bytes | None = None
+    if body is not None:
+        if raw_body:
+            payload = body if isinstance(body, bytes) else str(body).encode("utf-8")
+        else:
+            request_headers.setdefault("Content-Type", "application/json")
+            payload = json.dumps(body).encode("utf-8")
+    return f"{context.base}/{path}", request_headers, payload
+
+
+def _fetch_timeout_s(context: DustRequestContext) -> float | None:
+    return context.timeout_ms / 1000 if context.timeout_ms else None
+
+
 def dust_fetch(
     context: DustRequestContext,
     path: str,
@@ -143,25 +168,12 @@ def dust_fetch(
     point in its own generation.
     """
     fetch = context.fetch or _default_fetch
-    timeout_s = context.timeout_ms / 1000 if context.timeout_ms else None
+    timeout_s = _fetch_timeout_s(context)
 
     def send(token: str) -> DustResponse:
-        request_headers = {**dust_auth_headers(token), **(headers or {})}
-        payload: bytes | None = None
-        if body is not None:
-            if raw_body:
-                payload = body if isinstance(body, bytes) else str(body).encode("utf-8")
-            else:
-                request_headers.setdefault("Content-Type", "application/json")
-                payload = json.dumps(body).encode("utf-8")
+        url, request_headers, payload = _request_parts(context, path, method, body, raw_body, headers, token)
         try:
-            response = fetch(
-                f"{context.base}/{path}",
-                method=method,
-                headers=request_headers,
-                body=payload,
-                timeout_s=timeout_s,
-            )
+            response = fetch(url, method=method, headers=request_headers, body=payload, timeout_s=timeout_s)
         except Exception as exc:
             status = getattr(exc, "code", None) or getattr(exc, "status", None)
             if status is None:
@@ -184,6 +196,60 @@ def dust_fetch(
     response = send(resolve_token(context.access_token))
     if response.status != 401 or not callable(context.access_token):
         return response
+    return send(resolve_token(context.access_token, True))
+
+
+def dust_bytes(
+    context: DustRequestContext,
+    path: str,
+    method: str = "GET",
+    body: Any = None,
+    raw_body: bool = False,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """Perform one Dust API call and return its raw body bytes.
+
+    Unlike :func:`dust_fetch`, the stream is read exactly once and never
+    parsed as JSON, so text/plain routes (pod files) come back intact. A 401
+    is retried once like everywhere else.
+    """
+    fetch = context.fetch or _default_fetch
+    timeout_s = _fetch_timeout_s(context)
+
+    def send(token: str) -> tuple[int, bytes]:
+        url, request_headers, payload = _request_parts(context, path, method, body, raw_body, headers, token)
+        try:
+            response = fetch(url, method=method, headers=request_headers, body=payload, timeout_s=timeout_s)
+        except Exception as exc:
+            status = getattr(exc, "code", None) or getattr(exc, "status", None)
+            if status is None:
+                raise
+            return int(status), b""
+        if isinstance(response, DustResponse):
+            raw_body_value = response.body
+            if isinstance(raw_body_value, bytes):
+                return response.status, raw_body_value
+            if isinstance(raw_body_value, str):
+                return response.status, raw_body_value.encode("utf-8")
+            getcode = getattr(response.raw, "getcode", None)
+            if callable(getcode):
+                try:
+                    return int(getcode()), response.raw.read() or b""
+                except Exception:
+                    return response.status, b""
+            return response.status, b""
+        status = response.status if getattr(response, "status", None) is not None else response.getcode()
+        try:
+            data = response.read()
+        except Exception:
+            data = b""
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        return int(status), data or b""
+
+    status, data = send(resolve_token(context.access_token))
+    if status != 401 or not callable(context.access_token):
+        return status, data
     return send(resolve_token(context.access_token, True))
 
 
