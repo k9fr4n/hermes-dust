@@ -44,8 +44,8 @@ from hermes_dust.models import REASONING_EFFORTS, decode_model_id
 from hermes_dust.sse import iter_sse_events
 from hermes_dust.tag_stripper import create_tag_stripper
 
-AGENT_MESSAGE_ATTEMPTS = 6
-AGENT_MESSAGE_DELAY_S = 0.5
+AGENT_MESSAGE_ATTEMPTS = 12
+AGENT_MESSAGE_DELAY_S = 1.0
 TERMINAL_TYPES = {
     "agent_message_success": "stop",
     "agent_message_gracefully_stopped": "stop",
@@ -302,26 +302,50 @@ class DustClient:
         return state
 
     def _await_agent_message(self, conversation_id: str, user_message_id: str) -> str:
+        from hermes_dust.conversations import DustConversationGoneError
+
+        def poll() -> tuple[str | None, list[str]]:
+            try:
+                conversation = self._dust_json(f"assistant/conversations/{conversation_id}")
+            except DustConversationGoneError:
+                # A just-created conversation may not be readable yet;
+                # bounded by the attempts below, this is a retry, not a loss.
+                return None, []
+            if not isinstance(conversation, dict):
+                return None, []
+            found = find_agent_message_id(conversation, user_message_id)
+            if found is not None:
+                return found, []
+            return None, find_unfinished_agent_message_ids(conversation)
+
+        agent_message_id: str | None = None
+        running: list[str] = []
         for attempt in range(AGENT_MESSAGE_ATTEMPTS):
             if attempt:
                 self.sleep(AGENT_MESSAGE_DELAY_S)
-            conversation = self._dust_json(f"assistant/conversations/{conversation_id}")
-            found = find_agent_message_id(conversation if isinstance(conversation, dict) else {}, user_message_id)
-            if found is not None:
-                return found
-            if attempt == AGENT_MESSAGE_ATTEMPTS - 1:
-                running = find_unfinished_agent_message_ids(conversation if isinstance(conversation, dict) else {})
-                if running:
-                    self._dust_json(
-                        f"assistant/conversations/{conversation_id}/cancel",
-                        method="POST",
-                        body={"action": "cancel", "messageIds": running},
-                    )
-                    conversation = self._dust_json(f"assistant/conversations/{conversation_id}")
-                    found = find_agent_message_id(conversation if isinstance(conversation, dict) else {}, user_message_id)
-                    if found is not None:
-                        return found
-        raise ValueError("Dust accepted the message but created no agent reply to follow.")
+            agent_message_id, running = poll()
+            if agent_message_id is not None:
+                return agent_message_id
+        if running:
+            await_cancel = True
+            try:
+                self._dust_json(
+                    f"assistant/conversations/{conversation_id}/cancel",
+                    method="POST",
+                    body={"action": "cancel", "messageIds": running},
+                )
+            except Exception:
+                await_cancel = False
+            if await_cancel:
+                for _ in range(AGENT_MESSAGE_ATTEMPTS):
+                    self.sleep(AGENT_MESSAGE_DELAY_S)
+                    agent_message_id, _ = poll()
+                    if agent_message_id is not None:
+                        return agent_message_id
+        raise ValueError(
+            "Dust accepted the message but created no agent reply to follow "
+            f"(conversation {conversation_id})."
+        )
 
     def _find_follow_up(self, results: list[tuple[str, str, bool]]) -> _TurnState | None:
         if not results:

@@ -157,6 +157,55 @@ class TestClientBridge(unittest.TestCase):
         with self.assertRaises(ValueError):
             client._send([{"role": "user", "content": [{"type": "text", "text": "hi"}]}], "agent-default", [])
 
+    def test_await_agent_message_retries_until_visible(self) -> None:
+        from hermes_dust.client import DustClient, DustClientConfig
+
+        pod = FakePod()
+        client = FakeBridgeClient(pod, [])
+        client.sleep = lambda seconds: None
+        bare = {"sId": "conv1", "content": [[{"type": "user_message", "sId": "u1"}]]}
+        ready = {
+            "sId": "conv1",
+            "content": [
+                [{"type": "user_message", "sId": "u1"}],
+                [{"type": "agent_message", "sId": "a1", "parentMessageId": "u1", "status": "created"}],
+            ],
+        }
+        calls = {"n": 0}
+
+        def scripted(path: str, method: str = "GET", body=None):
+            calls["n"] += 1
+            return ready if calls["n"] >= 3 else bare
+
+        client._dust_json = scripted  # type: ignore[method-assign]
+        self.assertEqual(client._await_agent_message("conv1", "u1"), "a1")
+        self.assertGreaterEqual(calls["n"], 3)
+
+    def test_await_agent_message_survives_transient_gone(self) -> None:
+        from hermes_dust.conversations import DustConversationGoneError
+        from hermes_dust.http import DustApiError
+
+        pod = FakePod()
+        client = FakeBridgeClient(pod, [])
+        client.sleep = lambda seconds: None
+        ready = {
+            "sId": "conv1",
+            "content": [
+                [{"type": "user_message", "sId": "u1"}],
+                [{"type": "agent_message", "sId": "a1", "parentMessageId": "u1", "status": "created"}],
+            ],
+        }
+        calls = {"n": 0}
+
+        def scripted(path: str, method: str = "GET", body=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise DustConversationGoneError("conv1", DustApiError(404, "gone", None, "gone"))
+            return ready
+
+        client._dust_json = scripted  # type: ignore[method-assign]
+        self.assertEqual(client._await_agent_message("conv1", "u1"), "a1")
+
 
 if __name__ == "__main__":
     unittest.main()
