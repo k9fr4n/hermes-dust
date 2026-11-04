@@ -210,6 +210,7 @@ round-trips themselves are free.
 | Symptom | Cause / fix |
 | --- | --- |
 | `Unknown provider 'dust'` right after install | The plugin directory is not where your core scans for providers. Newer cores scan both `plugins/<name>/` and `plugins/model-providers/<name>/`; older ones only the latter. Move it and retry: `mv ~/.hermes/plugins/dust ~/.hermes/plugins/model-providers/dust` (replace `~/.hermes` with your `HERMES_HOME` — the install log shows the location). No reinstall needed; the next lookup picks it up. |
+| Only 4 fallback models in the picker | The live catalog fetch failed and the disk cache holds the fallback row. Check the grant first (`hermes auth status dust`, then `hermes auth refresh dust`), then force a re-probe: `hermes model --refresh` (or delete the `dust` row from `$HERMES_HOME/provider_models_cache.json` while Hermes is stopped). Token rotation itself is automatic — the pool refreshes the grant through this plugin's hook before it expires. |
 | `403` on every turn | The workspace lacks `models_picker`. Ask an admin, or pick no model until it is on — every offered model sends an override. |
 | `auth add` lists workspaces and stops | You belong to several; re-run with `--workspace <sId>`. |
 | `Not logged in to Dust` | `hermes auth add dust`; per profile — the CLI profile and the Desktop profile store separate grants. |
