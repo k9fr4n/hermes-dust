@@ -186,7 +186,8 @@ def fetch_dust_models(api_key: str | None = None, base_url: str | None = None, t
 
     try:
         entry = _pick_entry()
-    except RuntimeError:
+    except Exception:
+        # No pool (or no grant): the picker falls back to curated models.
         return None
     access_token, region, workspace_id = _entry_context(entry)
     if not workspace_id:
@@ -204,6 +205,18 @@ def fetch_dust_models(api_key: str | None = None, base_url: str | None = None, t
         return None
     ids = [m.id for m in models if m.id != "agent-default"]
     return ids or None
+
+
+def dust_picker_catalog(force_refresh: bool = False) -> list[str] | None:
+    """The provider's own model-picker catalog, tried before the generic fetch.
+
+    This core only live-fetches ``api_key``/``external_process`` profiles in
+    the generic path, so without this hook the picker would show
+    ``fallback_models`` forever. A None return (not signed in, fetch failed)
+    falls through to that path instead of an empty picker.
+    """
+    _ = force_refresh  # the Dust catalog has no delta: every read is current.
+    return fetch_dust_models()
 
 
 def _refreshed_token(entry: Any, refresh: bool) -> str:
@@ -287,6 +300,7 @@ def build_dust_profile() -> Any:
     profile.auth_handler = dust_auth_handler  # type: ignore[attr-defined]
     profile.refresh_credential = refresh_credential  # type: ignore[attr-defined]
     profile.fetch_models = fetch_dust_models  # type: ignore[method-assign]
+    profile.picker_catalog = dust_picker_catalog  # type: ignore[attr-defined]
     profile.create_client = create_dust_client  # type: ignore[method-assign]
     # No HTTP endpoint to probe: inference goes through the DustClient over
     # the conversation API, so the generic /models health check is skipped.

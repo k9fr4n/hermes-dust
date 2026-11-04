@@ -57,6 +57,10 @@ class TestBareDiscoveryLoad(unittest.TestCase):
         self.assertTrue(module.ACTIVE)
         self.assertEqual(len(registered), 1)
         self.assertEqual(registered[0].name, "dust")
+        # Picker hook: the core's provider_model_ids() tries it before the
+        # generic fetch, which skips non-api-key profiles.
+        self.assertTrue(callable(registered[0].picker_catalog))
+        self.assertIsNone(registered[0].picker_catalog(False))
 
 
 if __name__ == "__main__":
