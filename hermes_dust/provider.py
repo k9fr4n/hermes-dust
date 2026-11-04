@@ -236,21 +236,41 @@ def create_dust_client(**client_kwargs: Any) -> Any:
     )
 
 
+def _live_catalog() -> Any:
+    """Workspace catalog when a pooled grant exists, else None."""
+    from hermes_dust.http import DustRequestContext, dust_json
+    from hermes_dust.models import fetch_models
+
+    try:
+        entry = _pick_entry()
+    except Exception:
+        return None
+    try:
+        _, region, workspace_id = _entry_context(entry)
+        if not workspace_id:
+            return None
+        context = DustRequestContext(
+            base=dust_private_api_base(region, workspace_id),
+            access_token=lambda refresh: _refreshed_token(entry, refresh),
+        )
+        return fetch_models(lambda: dust_json(context, "models"))
+    except Exception as exc:
+        logger.debug("dust: live catalog unavailable: %s", exc)
+        return None
+
+
 def build_dust_profile() -> Any:
-    """Build the Hermes ProviderProfile; needs a Hermes core to import."""
+    """Build the Hermes ProviderProfile; needs a Hermes core to import.
+
+    Never requires a login: without a pooled grant the catalog falls back
+    to the curated list, so importing the plugin always registers the
+    provider and `hermes auth add dust` can find it afterwards.
+    """
     from providers.base import ProviderProfile
 
     from hermes_dust.models import AGENT_DEFAULT_MODEL, fetch_models, hermes_model_capabilities
 
-    try:
-        from hermes_dust.http import DustRequestContext, dust_json
-
-        entry = _pick_entry()
-        _, region, workspace_id = _entry_context(entry)
-        context = DustRequestContext(base=dust_private_api_base(region, workspace_id), access_token="")
-        catalog = fetch_models(lambda: dust_json(context, "models"))
-    except Exception:
-        catalog = [AGENT_DEFAULT_MODEL]
+    catalog = _live_catalog() or [AGENT_DEFAULT_MODEL]
 
     profile = ProviderProfile(
         name=PROVIDER_NAME,

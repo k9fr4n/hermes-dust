@@ -51,7 +51,7 @@ hermes_dust/
     session.py         # per-conversation claim/emit/outcome/delivery state
   client.py            # DustClient: OpenAI facade + SSE/pod interleaving
   provider.py          # ProviderProfile, auth handler, catalog, client
-tests/                 # stdlib unittest suite, no network (61 tests)
+tests/                 # stdlib unittest suite, no network (62 tests)
 opencode-reference/    # original opencode-dust sources (history)
 ```
 
@@ -87,10 +87,12 @@ Hermes process picks provider plugins up on its next provider lookup —
 no restart needed for the lookup itself, though the Desktop app may need
 one to refresh its pickers.
 
-Manual alternative, useful to hack on it:
+Manual alternative, useful to hack on it — note the `model-providers/`
+directory: older Hermes cores only discover provider plugins there, while
+newer ones also scan the flat install directory:
 
 ```sh
-git clone https://github.com/k9fr4n/hermes-dust.git ~/.hermes/plugins/hermes-dust
+git clone https://github.com/k9fr4n/hermes-dust.git ~/.hermes/plugins/model-providers/dust
 hermes plugins enable dust
 ```
 
@@ -101,7 +103,7 @@ hermes plugins validate ~/.hermes/plugins/hermes-dust
 python3 -m unittest discover -s ~/.hermes/plugins/hermes-dust/tests
 ```
 
-The second command runs the plugin's own 61-test stdlib suite; it makes
+The second command runs the plugin's own 62-test stdlib suite; it makes
 no network calls.
 
 > **Profiles.** Provider plugins resolve per Hermes profile. If you work
@@ -207,6 +209,7 @@ round-trips themselves are free.
 
 | Symptom | Cause / fix |
 | --- | --- |
+| `Unknown provider 'dust'` right after install | The plugin directory is not where your core scans for providers. Newer cores scan both `plugins/<name>/` and `plugins/model-providers/<name>/`; older ones only the latter. Move it and retry: `mv ~/.hermes/plugins/dust ~/.hermes/plugins/model-providers/dust` (replace `~/.hermes` with your `HERMES_HOME` — the install log shows the location). No reinstall needed; the next lookup picks it up. |
 | `403` on every turn | The workspace lacks `models_picker`. Ask an admin, or pick no model until it is on — every offered model sends an override. |
 | `auth add` lists workspaces and stops | You belong to several; re-run with `--workspace <sId>`. |
 | `Not logged in to Dust` | `hermes auth add dust`; per profile — the CLI profile and the Desktop profile store separate grants. |
